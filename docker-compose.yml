@@ -1,0 +1,17 @@
+services:
+  elena:
+    build: .
+    ports:
+      - "8099:8099"
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - elena-data:/app/data
+      - elena-audio:/app/audio
+    restart: unless-stopped
+
+volumes:
+  elena-data:
+  elena-audio:

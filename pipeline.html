@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Elena — pipeline</title>
+<style>
+  body{margin:0;background:#100c0a;color:#f6efe8;font:15px/1.4 system-ui}
+  .wrap{max-width:920px;margin:0 auto;padding:28px 18px 48px}
+  h1{font-size:22px;margin:0 0 6px}
+  p.sub{color:#a8988c;margin:0 0 22px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;justify-content:center}
+  .box{background:#1c1512;border:1px solid #3a2c26;border-radius:12px;padding:12px 14px;min-width:140px;max-width:220px}
+  .box b{display:block;margin-bottom:4px}
+  .box span{color:#a8988c;font-size:12px}
+  .acc{border-color:#e8632c}
+  .tool{border-color:#7a9e7e}
+  .mute{opacity:.75}
+  .arrow{text-align:center;color:#e8632c;margin:8px 0;font-size:18px}
+  .note{margin-top:22px;color:#a8988c;font-size:13px;border-top:1px dashed #3a2c26;padding-top:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Elena — pipeline</h1>
+  <p class="sub">Un proceso, una base. Los modelos de Hope se llaman. No son el core.</p>
+
+  <div class="row">
+    <div class="box"><b>Chat</b><span>POST /turno · voz</span></div>
+    <div class="box"><b>Correo</b><span>POST /correo · texto</span></div>
+    <div class="box mute"><b>Silencio</b><span>90 s · un aviso</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="row">
+    <div class="box acc"><b>Filtro</b><span>correo: corta mailer-daemon, noreply, elena@</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="row">
+    <div class="box tool"><b>remi-ai-core</b><span>1.9 GB · JSON, no habla. Solo si hace falta estructura.</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="row">
+    <div class="box tool"><b>un embedding</b><span>qwen3-embedding 0.6b o nomic. Nunca los dos en la misma tabla.</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="row">
+    <div class="box"><b>recuerdos</b><span>elena.db · top 4 · umbral 0.35</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="row">
+    <div class="box acc"><b>qwen2.5 3B instruct</b><span>la voz. ctx 2048. GTX 1060.</span></div>
+    <div class="box mute"><b>coder 3B</b><span>solo si el turno es código</span></div>
+  </div>
+  <div class="arrow">↓</div>
+  <div class="row">
+    <div class="box"><b>guardar</b><span>turno + vector</span></div>
+    <div class="box"><b>salida</b><span>chat → mp3 Elena · correo → answer</span></div>
+  </div>
+  <p class="note">Ollama en :11434 carga un modelo a la vez. Hope puede usar los mismos pesos después. La VRAM no se comparte en paralelo.</p>
+</div>
+</body>
+</html>
