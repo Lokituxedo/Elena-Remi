@@ -27,21 +27,59 @@ VOZ = os.environ.get("ELENA_VOZ", "es-AR-ElenaNeural")
 PORT = int(os.environ.get("ELENA_PORT", "8099"))
 BIND = os.environ.get("ELENA_BIND", "0.0.0.0")
 OLLAMA = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-MODELO = os.environ.get("ELENA_MODELO", "qwen2.5:3b-instruct-q4_K_M")
+DEFAULT_MODELO = os.environ.get("ELENA_MODELO", "qwen2.5:3b-instruct-q4_K_M")
 EMBED = os.environ.get("ELENA_EMBED", "nomic-embed-text")
 SILENCIO = int(os.environ.get("ELENA_SILENCIO_SEG", "90"))
 TOKEN = os.environ.get("ELENA_TOKEN", "")
 CTX = int(os.environ.get("ELENA_CTX", "2048"))
 MODEL_OVERRIDE_ALLOWED = os.environ.get("ELENA_ALLOW_MODEL_OVERRIDE", "1").strip().lower() in ("1", "true", "yes", "on")
-MODELOS_DISPONIBLES = [m.strip() for m in os.environ.get("ELENA_MODELOS", MODELO).split(",") if m.strip()]
-if not MODELOS_DISPONIBLES:
-    MODELOS_DISPONIBLES = [MODELO]
-if MODELO not in MODELOS_DISPONIBLES:
-    MODELOS_DISPONIBLES.insert(0, MODELO)
+
+
+def _normalizar_lista(value, fallback):
+    items = [m.strip() for m in (value or fallback).split(",") if m and m.strip()]
+    seen = []
+    for item in items:
+        if item not in seen:
+            seen.append(item)
+    if not seen:
+        return [fallback]
+    if fallback not in seen:
+        seen.insert(0, fallback)
+    return seen
+
+
+MODELOS_DISPONIBLES = _normalizar_lista(os.environ.get("ELENA_MODELOS"), DEFAULT_MODELO)
+MODELO = DEFAULT_MODELO if DEFAULT_MODELO in MODELOS_DISPONIBLES else MODELOS_DISPONIBLES[0]
 
 _lock = threading.Lock()
-
 MODELOS_JSON = json.dumps(MODELOS_DISPONIBLES)
+
+
+def listar_modelos_ollama():
+    try:
+        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=3) as resp:
+            data = json.loads(resp.read().decode())
+        modelos = []
+        for item in data.get("models", []):
+            name = item.get("name") or item.get("model")
+            if isinstance(name, str) and name.strip():
+                modelos.append(name.strip())
+        if modelos:
+            return modelos
+    except Exception:
+        pass
+    return []
+
+
+def modelos_permitidos():
+    ollama = listar_modelos_ollama()
+    base = MODELOS_DISPONIBLES[:]
+    for model in ollama:
+        if model not in base:
+            base.append(model)
+    return base
+
+
 HTML = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -49,15 +87,21 @@ HTML = f"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Elena</title>
 <style>
-:root{{--bg:#100c0a;--fg:#f6efe8;--mut:#a8988c;--acc:#e8632c;--card:#1c1512}}
+:root{{--bg:#100c0a;--fg:#f6efe8;--mut:#a8988c;--acc:#e8632c;--card:#1c1512;--soft:#221914;--ok:#7a9e7e;--warn:#f6c66b}}
 *{{box-sizing:border-box}}
 html,body{{margin:0;height:100%;background:var(--bg);color:var(--fg);font:17px/1.45 "Iowan Old Style",Palatino,serif}}
 main{{max-width:560px;margin:0 auto;height:100%;display:flex;flex-direction:column}}
 header{{display:flex;justify-content:space-between;align-items:baseline;padding:16px 18px 8px}}
 header b{{font-weight:600;letter-spacing:.08em;font-size:13px}}
 header span{{color:var(--mut);font-size:12px}}
-.toolbar{{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:0 18px 10px;color:var(--mut);font:12px system-ui}}
-.toolbar select{{background:#1a1411;color:var(--fg);border:1px solid #3a2c26;border-radius:8px;padding:6px 10px;font:12px system-ui}}
+.toolbar{{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:0 18px 10px;color:var(--mut);font:12px system-ui}}
+.model-block{{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-height:32px}}
+.badge{{background:var(--soft);border:1px solid #3a2c26;color:var(--fg);border-radius:999px;padding:5px 9px;font-weight:600;letter-spacing:.02em}}
+.mode-tag{{padding:4px 8px;border-radius:999px;font-size:11px;border:1px solid #3a2c26;display:inline-flex;align-items:center}}
+.mode-tag.dev{{background:rgba(122,158,126,.12);color:var(--ok);border-color:rgba(122,158,126,.5)}}
+.mode-tag.prod{{background:rgba(246,198,107,.12);color:var(--warn);border-color:rgba(246,198,107,.45)}}
+.toolbar select{{background:#1a1411;color:var(--fg);border:1px solid #3a2c26;border-radius:8px;padding:6px 10px;font:12px system-ui;display:none}}
+.toolbar.visible select{{display:block}}
 #hilo{{flex:1;overflow:auto;padding:8px 16px 12px;display:flex;flex-direction:column;gap:10px}}
 .b{{max-width:88%;padding:10px 12px;border-radius:14px;white-space:pre-wrap}}
 .ro{{align-self:flex-end;background:var(--acc);color:#fff;border-bottom-right-radius:4px}}
@@ -73,9 +117,15 @@ button.send{{background:var(--acc);color:#fff;border:0;border-radius:12px;paddin
 <body>
 <main>
 <header><b>ELENA</b><span id="st">en linea</span></header>
-<div class="toolbar">
-  <label for="model-select">Modelo</label>
-  <select id="model-select" aria-label="Seleccionar modelo"></select>
+<div class="toolbar" id="toolbar">
+  <div class="model-block">
+    <span class="badge" id="active-model">{MODELO}</span>
+    <span class="mode-tag {('dev' if MODEL_OVERRIDE_ALLOWED else 'prod')}">{('DEV' if MODEL_OVERRIDE_ALLOWED else 'PROD')}</span>
+  </div>
+  <div class="model-block" id="selector-wrap">
+    <label for="model-select" style="display:none;">Modelo</label>
+    <select id="model-select" aria-label="Seleccionar modelo"></select>
+  </div>
 </div>
 <div id="hilo"></div>
 <form id="f">
@@ -84,25 +134,67 @@ button.send{{background:var(--acc);color:#fff;border:0;border-radius:12px;paddin
 </form>
 </main>
 <script>
-const MODELOS = {MODELOS_JSON};
+const DEFAULT_MODELS = {MODELOS_JSON};
 const modelSelect = document.getElementById("model-select");
+const activeModel = document.getElementById("active-model");
+const toolbar = document.getElementById("toolbar");
+const selectorWrap = document.getElementById("selector-wrap");
+const overrideAllowed = {str(MODEL_OVERRIDE_ALLOWED).lower()};
 const saved = localStorage.getItem("elena_model");
-const defaultModel = MODELOS.includes("{MODELO}") ? "{MODELO}" : MODELOS[0];
-MODELOS.forEach(function(model) {{
-  const option = document.createElement("option");
-  option.value = model;
-  option.textContent = model;
-  modelSelect.appendChild(option);
-}});
-if (saved && MODELOS.includes(saved)) {{
-  modelSelect.value = saved;
-}} else {{
-  modelSelect.value = defaultModel;
-  localStorage.setItem("elena_model", defaultModel);
+let models = DEFAULT_MODELS;
+
+function applyModelList(list) {{
+  models = Array.isArray(list) && list.length ? list : DEFAULT_MODELS;
+  modelSelect.innerHTML = "";
+  models.forEach(function(model) {{
+    const option = document.createElement("option");
+    option.value = model;
+    option.textContent = model;
+    modelSelect.appendChild(option);
+  }});
+
+  let chosen = saved && models.includes(saved) ? saved : models[0];
+  if (models.includes("{DEFAULT_MODELO}")) chosen = "{DEFAULT_MODELO}";
+  modelSelect.value = chosen;
+  activeModel.textContent = chosen;
+  localStorage.setItem("elena_model", chosen);
 }}
+
+if (overrideAllowed) {{
+  toolbar.classList.add("visible");
+  selectorWrap.style.display = "inline-flex";
+  fetch("/models").then(function(r){{ return r.json(); }}).then(function(j){{
+    if (j && Array.isArray(j.models) && j.models.length) applyModelList(j.models);
+    else applyModelList(DEFAULT_MODELS);
+  }}).catch(function(){{ applyModelList(DEFAULT_MODELS); }});
+}} else {{
+  selectorWrap.style.display = "none";
+  fetch("/health").then(function(r){{ return r.json(); }}).then(function(j){{
+    if (j && Array.isArray(j.modelos) && j.modelos.length) {{
+      const active = j.modelo || j.modelos[0];
+      activeModel.textContent = active;
+      localStorage.setItem("elena_model", active);
+      modelSelect.innerHTML = "";
+      j.modelos.forEach(function(model) {{
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model;
+        modelSelect.appendChild(option);
+      }});
+      modelSelect.value = active;
+    }} else {{
+      activeModel.textContent = "{DEFAULT_MODELO}";
+      localStorage.setItem("elena_model", "{DEFAULT_MODELO}");
+    }}
+  }}).catch(function(){{ activeModel.textContent = "{DEFAULT_MODELO}"; }});
+}}
+
 modelSelect.addEventListener("change", function() {{
-  localStorage.setItem("elena_model", modelSelect.value);
+  const chosen = modelSelect.value;
+  activeModel.textContent = chosen;
+  localStorage.setItem("elena_model", chosen);
 }});
+
 var last = 0;
 function pinta(rows){{
   var h = document.getElementById("hilo");
@@ -137,7 +229,8 @@ document.getElementById("f").onsubmit = function(e){{
   var texto = t.value.trim();
   if (!texto) return;
   t.value = "";
-  fetch("/turno", {{method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{texto: texto, modelo: modelSelect.value}})}});
+  const finalModel = overrideAllowed ? modelSelect.value : "{DEFAULT_MODELO}";
+  fetch("/turno", {{method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{texto: texto, modelo: finalModel}})}});
 }};
 poll();
 setInterval(poll, 2000);
@@ -319,7 +412,7 @@ def llamar_modelo(mensajes, extra="", modelo=None):
     if extra:
         sistema += "\n\nMemoria relevante, usala solo si encaja:\n" + extra
     model_name = modelo or MODELO
-    if model_name not in MODELOS_DISPONIBLES:
+    if model_name not in modelos_permitidos():
         model_name = MODELO
     data = _post(
         OLLAMA + "/api/chat",
@@ -433,12 +526,15 @@ class Handler(BaseHTTPRequestHandler):
                     "app": "elena",
                     "ollama": ollama_vivo(),
                     "modelo": MODELO,
-                    "modelos": MODELOS_DISPONIBLES,
+                    "modelos": modelos_permitidos(),
                     "override": MODEL_OVERRIDE_ALLOWED,
                     "embed": EMBED,
                     "db": str(DB),
                 },
             )
+            return
+        if path == "/models":
+            self._json(200, {"models": modelos_permitidos(), "default": MODELO, "override": MODEL_OVERRIDE_ALLOWED})
             return
         if path == "/turnos":
             qs = parse_qs(urlparse(self.path).query)
@@ -479,15 +575,19 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json(400, {"error": "json"})
             return
+
+        allowed = modelos_permitidos()
+
         if path == "/correo":
             modelo = (payload.get("modelo") or payload.get("model") or MODELO).strip()
             if not MODEL_OVERRIDE_ALLOWED:
                 modelo = MODELO
-            if modelo not in MODELOS_DISPONIBLES:
-                self._json(400, {"error": "modelo no permitido", "permitidos": MODELOS_DISPONIBLES})
+            if modelo not in allowed:
+                self._json(400, {"error": "modelo no permitido", "permitidos": allowed})
                 return
             self._json(200, correo(payload, modelo=modelo))
             return
+
         texto = (payload.get("texto") or "").strip()
         if not texto or len(texto) > 4000:
             self._json(400, {"error": "vacio"})
@@ -495,8 +595,8 @@ class Handler(BaseHTTPRequestHandler):
         modelo = (payload.get("modelo") or payload.get("model") or MODELO).strip()
         if not MODEL_OVERRIDE_ALLOWED:
             modelo = MODELO
-        if modelo not in MODELOS_DISPONIBLES:
-            self._json(400, {"error": "modelo no permitido", "permitidos": MODELOS_DISPONIBLES})
+        if modelo not in allowed:
+            self._json(400, {"error": "modelo no permitido", "permitidos": allowed})
             return
         threading.Thread(target=responder, args=(texto, "chat", True, modelo), daemon=True).start()
         self._json(202, {"aceptado": True, "modelo": modelo})
