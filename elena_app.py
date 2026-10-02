@@ -6,8 +6,8 @@ Memoria: nomic-embed-text, vectores en elena.db, no en D1.
 No usa el worker viejo ni Resend. El correo entra por POST /correo y sale texto.
 """
 
-import math
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -32,38 +32,51 @@ EMBED = os.environ.get("ELENA_EMBED", "nomic-embed-text")
 SILENCIO = int(os.environ.get("ELENA_SILENCIO_SEG", "90"))
 TOKEN = os.environ.get("ELENA_TOKEN", "")
 CTX = int(os.environ.get("ELENA_CTX", "2048"))
+MODEL_OVERRIDE_ALLOWED = os.environ.get("ELENA_ALLOW_MODEL_OVERRIDE", "1").strip().lower() in ("1", "true", "yes", "on")
+MODELOS_DISPONIBLES = [m.strip() for m in os.environ.get("ELENA_MODELOS", MODELO).split(",") if m.strip()]
+if not MODELOS_DISPONIBLES:
+    MODELOS_DISPONIBLES = [MODELO]
+if MODELO not in MODELOS_DISPONIBLES:
+    MODELOS_DISPONIBLES.insert(0, MODELO)
 
 _lock = threading.Lock()
 
-HTML = r"""<!DOCTYPE html>
+MODELOS_JSON = json.dumps(MODELOS_DISPONIBLES)
+HTML = f"""<!DOCTYPE html>
 <html lang="es">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Elena</title>
 <style>
-:root{--bg:#100c0a;--fg:#f6efe8;--mut:#a8988c;--acc:#e8632c;--card:#1c1512}
-*{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:17px/1.45 "Iowan Old Style",Palatino,serif}
-main{max-width:560px;margin:0 auto;height:100%;display:flex;flex-direction:column}
-header{display:flex;justify-content:space-between;align-items:baseline;padding:16px 18px 8px}
-header b{font-weight:600;letter-spacing:.08em;font-size:13px}
-header span{color:var(--mut);font-size:12px}
-#hilo{flex:1;overflow:auto;padding:8px 16px 12px;display:flex;flex-direction:column;gap:10px}
-.b{max-width:88%;padding:10px 12px;border-radius:14px;white-space:pre-wrap}
-.ro{align-self:flex-end;background:var(--acc);color:#fff;border-bottom-right-radius:4px}
-.elena{align-self:flex-start;background:var(--card);border-bottom-left-radius:4px}
-.sistema{align-self:center;color:var(--mut);font-size:13px;font-family:system-ui,sans-serif}
-.meta{display:block;margin-top:6px;font:11px system-ui;color:var(--mut)}
-.play{margin-top:8px;background:transparent;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:4px 10px;font:12px system-ui}
-form{display:flex;gap:8px;padding:12px 12px calc(12px + env(safe-area-inset-bottom))}
-input{flex:1;background:#1a1411;color:var(--fg);border:1px solid #3a2c26;border-radius:12px;padding:12px;font:16px system-ui}
-button.send{background:var(--acc);color:#fff;border:0;border-radius:12px;padding:0 16px;font:15px system-ui}
+:root{{--bg:#100c0a;--fg:#f6efe8;--mut:#a8988c;--acc:#e8632c;--card:#1c1512}}
+*{{box-sizing:border-box}}
+html,body{{margin:0;height:100%;background:var(--bg);color:var(--fg);font:17px/1.45 "Iowan Old Style",Palatino,serif}}
+main{{max-width:560px;margin:0 auto;height:100%;display:flex;flex-direction:column}}
+header{{display:flex;justify-content:space-between;align-items:baseline;padding:16px 18px 8px}}
+header b{{font-weight:600;letter-spacing:.08em;font-size:13px}}
+header span{{color:var(--mut);font-size:12px}}
+.toolbar{{display:flex;justify-content:flex-end;align-items:center;gap:8px;padding:0 18px 10px;color:var(--mut);font:12px system-ui}}
+.toolbar select{{background:#1a1411;color:var(--fg);border:1px solid #3a2c26;border-radius:8px;padding:6px 10px;font:12px system-ui}}
+#hilo{{flex:1;overflow:auto;padding:8px 16px 12px;display:flex;flex-direction:column;gap:10px}}
+.b{{max-width:88%;padding:10px 12px;border-radius:14px;white-space:pre-wrap}}
+.ro{{align-self:flex-end;background:var(--acc);color:#fff;border-bottom-right-radius:4px}}
+.elena{{align-self:flex-start;background:var(--card);border-bottom-left-radius:4px}}
+.sistema{{align-self:center;color:var(--mut);font-size:13px;font-family:system-ui,sans-serif}}
+.meta{{display:block;margin-top:6px;font:11px system-ui;color:var(--mut)}}
+.play{{margin-top:8px;background:transparent;color:var(--acc);border:1px solid var(--acc);border-radius:999px;padding:4px 10px;font:12px system-ui}}
+form{{display:flex;gap:8px;padding:12px 12px calc(12px + env(safe-area-inset-bottom))}}
+input{{flex:1;background:#1a1411;color:var(--fg);border:1px solid #3a2c26;border-radius:12px;padding:12px;font:16px system-ui}}
+button.send{{background:var(--acc);color:#fff;border:0;border-radius:12px;padding:0 16px;font:15px system-ui}}
 </style>
 </head>
 <body>
 <main>
 <header><b>ELENA</b><span id="st">en linea</span></header>
+<div class="toolbar">
+  <label for="model-select">Modelo</label>
+  <select id="model-select" aria-label="Seleccionar modelo"></select>
+</div>
 <div id="hilo"></div>
 <form id="f">
 <input id="t" placeholder="Escribile" autocomplete="off" enterkeyhint="send">
@@ -71,10 +84,29 @@ button.send{background:var(--acc);color:#fff;border:0;border-radius:12px;padding
 </form>
 </main>
 <script>
+const MODELOS = {MODELOS_JSON};
+const modelSelect = document.getElementById("model-select");
+const saved = localStorage.getItem("elena_model");
+const defaultModel = MODELOS.includes("{MODELO}") ? "{MODELO}" : MODELOS[0];
+MODELOS.forEach(function(model) {{
+  const option = document.createElement("option");
+  option.value = model;
+  option.textContent = model;
+  modelSelect.appendChild(option);
+}});
+if (saved && MODELOS.includes(saved)) {{
+  modelSelect.value = saved;
+}} else {{
+  modelSelect.value = defaultModel;
+  localStorage.setItem("elena_model", defaultModel);
+}}
+modelSelect.addEventListener("change", function() {{
+  localStorage.setItem("elena_model", modelSelect.value);
+}});
 var last = 0;
-function pinta(rows){
+function pinta(rows){{
   var h = document.getElementById("hilo");
-  rows.forEach(function(r){
+  rows.forEach(function(r){{
     var d = document.createElement("div");
     d.className = "b " + r.rol;
     d.textContent = r.texto;
@@ -82,31 +114,31 @@ function pinta(rows){
     m.className = "meta";
     m.textContent = r.origen + " · " + r.ts;
     d.appendChild(m);
-    if (r.audio_path){
+    if (r.audio_path){{
       var b = document.createElement("button");
       b.className = "play"; b.type = "button"; b.textContent = "Oir";
-      b.onclick = function(){ new Audio("/audio/" + r.id).play(); };
+      b.onclick = function(){{ new Audio("/audio/" + r.id).play(); }};
       d.appendChild(b);
-    }
+    }}
     h.appendChild(d);
     last = r.id;
-  });
+  }});
   h.scrollTop = h.scrollHeight;
-}
-function poll(){
-  fetch("/turnos?desde=" + last).then(function(r){return r.json();}).then(function(j){
+}}
+function poll(){{
+  fetch("/turnos?desde=" + last).then(function(r){{return r.json();}}).then(function(j){{
     if (j.turnos && j.turnos.length) pinta(j.turnos);
     document.getElementById("st").textContent = j.router ? "router ok" : "router en espera";
-  }).catch(function(){ document.getElementById("st").textContent = "sin red"; });
-}
-document.getElementById("f").onsubmit = function(e){
+  }}).catch(function(){{ document.getElementById("st").textContent = "sin red"; }});
+}}
+document.getElementById("f").onsubmit = function(e){{
   e.preventDefault();
   var t = document.getElementById("t");
   var texto = t.value.trim();
   if (!texto) return;
   t.value = "";
-  fetch("/turno", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({texto: texto})});
-};
+  fetch("/turno", {{method:"POST", headers:{{"Content-Type":"application/json"}}, body: JSON.stringify({{texto: texto, modelo: modelSelect.value}})}});
+}};
 poll();
 setInterval(poll, 2000);
 </script>
@@ -282,14 +314,17 @@ def recuperar(consulta, k=4):
     return [t for s, t in scored[:k] if s >= 0.35]
 
 
-def llamar_modelo(mensajes, extra=""):
+def llamar_modelo(mensajes, extra="", modelo=None):
     sistema = perfil()
     if extra:
         sistema += "\n\nMemoria relevante, usala solo si encaja:\n" + extra
+    model_name = modelo or MODELO
+    if model_name not in MODELOS_DISPONIBLES:
+        model_name = MODELO
     data = _post(
         OLLAMA + "/api/chat",
         {
-            "model": MODELO,
+            "model": model_name,
             "stream": False,
             "keep_alive": "10m",
             "options": {"temperature": 0.6, "num_ctx": CTX},
@@ -300,12 +335,12 @@ def llamar_modelo(mensajes, extra=""):
     return (data.get("message") or {}).get("content", "").strip()
 
 
-def responder(texto_ro, origen="chat", voz=True):
+def responder(texto_ro, origen="chat", voz=True, modelo=None):
     with _lock:
         tid_in = guardar("ro", texto_ro, origen)
         mem = recuperar(texto_ro)
         try:
-            respuesta = llamar_modelo(historial(), "\n".join(mem))
+            respuesta = llamar_modelo(historial(), "\n".join(mem), modelo=modelo)
         except Exception as exc:
             guardar("sistema", "Ollama no respondió. Quedó pendiente. " + type(exc).__name__, origen)
             return None
@@ -323,7 +358,7 @@ def responder(texto_ro, origen="chat", voz=True):
 _NO_RESPONDER = ("mailer-daemon", "noreply", "no-reply", "elena@karukren.cl")
 
 
-def correo(payload):
+def correo(payload, modelo=None):
     frm = (payload.get("from") or "").strip().lower()
     asunto = (payload.get("subject") or "(sin asunto)").strip()
     cuerpo = (payload.get("text") or "").strip()
@@ -333,7 +368,7 @@ def correo(payload):
         guardar("sistema", "correo ignorado de " + frm, "correo")
         return {"ok": True, "dropped": True}
     texto = f"Correo de {frm}. Asunto: {asunto}.\n{cuerpo[:3000]}"
-    respuesta = responder(texto, origen="correo", voz=False)
+    respuesta = responder(texto, origen="correo", voz=False, modelo=modelo)
     if not respuesta:
         return {"ok": False, "error": "modelo"}
     return {"ok": True, "answer": respuesta}
@@ -391,7 +426,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, HTML, "text/html; charset=utf-8")
             return
         if path == "/health":
-            self._json(200, {"ok": True, "app": "elena", "ollama": ollama_vivo(), "modelo": MODELO, "embed": EMBED, "db": str(DB)})
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "app": "elena",
+                    "ollama": ollama_vivo(),
+                    "modelo": MODELO,
+                    "modelos": MODELOS_DISPONIBLES,
+                    "override": MODEL_OVERRIDE_ALLOWED,
+                    "embed": EMBED,
+                    "db": str(DB),
+                },
+            )
             return
         if path == "/turnos":
             qs = parse_qs(urlparse(self.path).query)
@@ -433,14 +480,26 @@ class Handler(BaseHTTPRequestHandler):
             self._json(400, {"error": "json"})
             return
         if path == "/correo":
-            self._json(200, correo(payload))
+            modelo = (payload.get("modelo") or payload.get("model") or MODELO).strip()
+            if not MODEL_OVERRIDE_ALLOWED:
+                modelo = MODELO
+            if modelo not in MODELOS_DISPONIBLES:
+                self._json(400, {"error": "modelo no permitido", "permitidos": MODELOS_DISPONIBLES})
+                return
+            self._json(200, correo(payload, modelo=modelo))
             return
         texto = (payload.get("texto") or "").strip()
         if not texto or len(texto) > 4000:
             self._json(400, {"error": "vacio"})
             return
-        threading.Thread(target=responder, args=(texto,), daemon=True).start()
-        self._json(202, {"aceptado": True})
+        modelo = (payload.get("modelo") or payload.get("model") or MODELO).strip()
+        if not MODEL_OVERRIDE_ALLOWED:
+            modelo = MODELO
+        if modelo not in MODELOS_DISPONIBLES:
+            self._json(400, {"error": "modelo no permitido", "permitidos": MODELOS_DISPONIBLES})
+            return
+        threading.Thread(target=responder, args=(texto, "chat", True, modelo), daemon=True).start()
+        self._json(202, {"aceptado": True, "modelo": modelo})
 
 
 def main():
